@@ -1,0 +1,49 @@
+import discord
+from discord.ext import commands
+import logging
+from dotenv import load_dotenv
+import os
+import requests
+
+load_dotenv()
+token = os.getenv('DISCORD_TOKEN')
+
+handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+@bot.event
+async def on_ready():
+    print("Bot is ready.")
+
+@bot.command()
+@commands.has_role("King")
+async def join_game(ctx):
+    try:
+        response = requests.post("http://localhost:5000/join_game")
+        await ctx.send(response.text)
+    except Exception as e:
+        await ctx.send(f"Error contacting AFK system: {e}")
+
+@bot.command()
+@commands.has_role("King")
+async def leave_game(ctx):
+    try:
+        response = requests.post("http://localhost:5000/leave_game")
+        await ctx.send(response.text)
+    except Exception as e:
+        await ctx.send(f"Error contacting AFK system: {e}")
+
+@bot.command()
+@commands.has_role("King")
+async def restart_game(ctx):
+    try:
+        response = requests.post("http://localhost:5000/restart_game")
+        await ctx.send(response.text)
+    except Exception as e:
+        await ctx.send(f"Error contacting AFK system: {e}")
+
+bot.run(token, log_handler=handler, log_level=logging.DEBUG)
