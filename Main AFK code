@@ -1,0 +1,254 @@
+import json
+import os
+from flask import Flask
+import pyautogui
+import webbrowser
+import threading
+import time
+import requests
+import subprocess
+import sys
+import pygetwindow as gw
+import tkinter as tk
+from tkinter import messagebox
+from werkzeug.serving import make_server
+
+# ----------------- Settings Persistence ------------------
+SETTINGS_FILE = "settings.json"
+
+default_settings = {
+    "WEBHOOK_URL": "",
+    "PRIVATE_SERVER_URL": "",
+    "FLASK_SERVER_ENABLED": False
+}
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    else:
+        return default_settings.copy()
+
+def save_settings():
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump({
+            "WEBHOOK_URL": WEBHOOK_URL,
+            "PRIVATE_SERVER_URL": PRIVATE_SERVER_URL,
+            "FLASK_SERVER_ENABLED": FLASK_SERVER_ENABLED
+        }, f, indent=4)
+
+settings = load_settings()
+WEBHOOK_URL = settings["WEBHOOK_URL"]
+PRIVATE_SERVER_URL = settings["PRIVATE_SERVER_URL"]
+FLASK_SERVER_ENABLED = settings["FLASK_SERVER_ENABLED"]
+
+# ----------------- Flask App ------------------
+app = Flask(__name__)
+screenshot_thread = None
+running = False
+flask_thread = None
+
+class ServerThread(threading.Thread):
+    def __init__(self):
+        threading.Thread.__init__(self)
+        self.server = make_server('127.0.0.1', 5000, app)
+        self.ctx = app.app_context()
+        self.ctx.push()
+
+    def run(self):
+        self.server.serve_forever()
+
+    def shutdown(self):
+        self.server.shutdown()
+
+def toggle_flask_server(enable: bool):
+    global flask_thread, FLASK_SERVER_ENABLED
+    FLASK_SERVER_ENABLED = enable
+    save_settings()
+
+    if enable and flask_thread is None:
+        flask_thread = ServerThread()
+        flask_thread.start()
+        print("Flask server started.")
+    elif not enable and flask_thread is not None:
+        flask_thread.shutdown()
+        flask_thread = None
+        print("Flask server stopped.")
+
+# ----------------- Roblox Automation ------------------
+
+def focus_roblox_window():
+    try:
+        for window in gw.getWindowsWithTitle("Roblox"):
+            if window.isMinimized:
+                window.restore()
+            window.activate()
+            print("Roblox window focused.")
+            return
+        print("Roblox window not found.")
+    except Exception as e:
+        print(f"Error focusing Roblox: {e}")
+
+def join_game_and_start_screenshots():
+    global running
+    running = True
+
+    print("Opening Roblox and starting game...")
+    webbrowser.open(PRIVATE_SERVER_URL)
+    time.sleep(15)
+
+    focus_roblox_window()
+    time.sleep(2)
+
+    print("Roblox game joined. Starting screenshot loop...")
+
+    while running:
+        try:
+            for window in gw.getWindowsWithTitle("Roblox"):
+                if window.isMinimized:
+                    print("Roblox is minimized. Restoring window...")
+                    window.restore()
+                    window.activate()
+                break
+        except Exception as e:
+            print(f"Error checking Roblox window: {e}")
+
+        pyautogui.click(x=1000, y=500)
+        screenshot = pyautogui.screenshot()
+        screenshot.save("screenshot.png")
+
+        with open("screenshot.png", "rb") as f:
+            files = {"file": ("screenshot.png", f, "image/png")}
+            requests.post(WEBHOOK_URL, files=files)
+
+        time.sleep(30)
+
+def leave_game():
+    global running
+    running = False
+    print("Closing Roblox...")
+    subprocess.call("taskkill /f /im RobloxPlayerBeta.exe", shell=True)
+
+def restart_game():
+    print("Restarting game...")
+    leave_game()
+    time.sleep(5)
+    join_game_and_start_screenshots()
+
+def stop_screenshots():
+    global running
+    running = False
+    if screenshot_thread is not None and screenshot_thread.is_alive():
+        screenshot_thread.join()
+    print("Screenshot loop stopped.")
+
+@app.route('/join_game', methods=['POST'])
+def join_game():
+    global screenshot_thread
+    if screenshot_thread is None or not screenshot_thread.is_alive():
+        screenshot_thread = threading.Thread(target=join_game_and_start_screenshots)
+        screenshot_thread.start()
+        return "Game joining and screenshot loop started"
+    else:
+        return "Screenshot loop already running"
+
+@app.route('/leave_game', methods=['POST'])
+def leave():
+    leave_game()
+    return "Roblox closed and screenshot loop stopped"
+
+@app.route('/restart_game', methods=['POST'])
+def restart():
+    global screenshot_thread
+    leave_game()
+    screenshot_thread = threading.Thread(target=restart_game)
+    screenshot_thread.start()
+    return "Roblox restarted"
+
+# ----------------- GUI ------------------
+
+def start_join_game_thread():
+    global screenshot_thread
+    if screenshot_thread is None or not screenshot_thread.is_alive():
+        screenshot_thread = threading.Thread(target=join_game_and_start_screenshots, daemon=True)
+        screenshot_thread.start()
+    else:
+        print("Screenshot loop already running.")
+
+def start_restart_game_thread():
+    global screenshot_thread
+    if screenshot_thread is None or not screenshot_thread.is_alive():
+        screenshot_thread = threading.Thread(target=restart_game, daemon=True)
+        screenshot_thread.start()
+    else:
+        leave_game()
+        screenshot_thread = threading.Thread(target=restart_game, daemon=True)
+        screenshot_thread.start()
+
+def open_settings():
+    global WEBHOOK_URL, PRIVATE_SERVER_URL
+
+    settings_win = tk.Toplevel()
+    settings_win.title("Settings")
+    settings_win.geometry("400x400")
+
+    def open_help():
+        webbrowser.open("https://github.com/trus-d-h/AFK-bot-/blob/main/Help.md")
+
+    tk.Button(settings_win, text="Help", width=25, command=open_help).pack(pady=10)
+
+    tk.Label(settings_win, text="Discord Webhook URL:").pack()
+    webhook_var = tk.StringVar(value=WEBHOOK_URL)
+    tk.Entry(settings_win, textvariable=webhook_var, width=50).pack(pady=5)
+
+    def save_webhook():
+        nonlocal webhook_var
+        globals()['WEBHOOK_URL'] = webhook_var.get()
+        save_settings()
+        messagebox.showinfo("Saved", "Discord Webhook URL updated!")
+
+    tk.Button(settings_win, text="Save Webhook URL", command=save_webhook).pack(pady=10)
+
+    tk.Label(settings_win, text="Private Server URL:").pack()
+    server_var = tk.StringVar(value=PRIVATE_SERVER_URL)
+    tk.Entry(settings_win, textvariable=server_var, width=50).pack(pady=5)
+
+    def save_server():
+        nonlocal server_var
+        globals()['PRIVATE_SERVER_URL'] = server_var.get()
+        save_settings()
+        messagebox.showinfo("Saved", "Private Server URL updated!")
+
+    tk.Button(settings_win, text="Save Private Server URL", command=save_server).pack(pady=10)
+
+    def toggle_flask():
+        enabled = toggle_var.get()
+        toggle_flask_server(enabled)
+        messagebox.showinfo("Toggled", f"Flask server is now {'enabled' if enabled else 'disabled'}.")
+
+    toggle_var = tk.BooleanVar(value=FLASK_SERVER_ENABLED)
+    tk.Checkbutton(settings_win, text="Enable Flask Server (Bot API)", variable=toggle_var, command=toggle_flask).pack(pady=10)
+
+    tk.Button(settings_win, text="Close Settings", command=settings_win.destroy).pack(pady=10)
+
+def launch_gui():
+    app = tk.Tk()
+    app.title("AFK Roblox Controller")
+    app.geometry("500x450")
+
+    tk.Label(app, text="AFK Controls", font=("Arial", 14)).pack(pady=10)
+
+    tk.Button(app, text="Join Game", width=30, command=start_join_game_thread).pack(pady=5)
+    tk.Button(app, text="Close Roblox", width=30, command=leave_game).pack(pady=5)
+    tk.Button(app, text="Restart Game", width=30, command=start_restart_game_thread).pack(pady=5)
+    tk.Button(app, text="Focus Roblox Window", width=30, command=focus_roblox_window).pack(pady=5)
+    tk.Button(app, text="Stop Screenshots", width=30, command=stop_screenshots).pack(pady=5)
+    tk.Button(app, text="Settings", width=30, command=open_settings).pack(pady=5)
+    tk.Button(app, text="Quit (this will close Roblox)", width=30, command=lambda: (leave_game(), app.destroy())).pack(pady=20)
+
+    app.mainloop()
+
+if __name__ == '__main__':
+    if FLASK_SERVER_ENABLED:
+        toggle_flask_server(True)
+    launch_gui()
